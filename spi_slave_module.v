@@ -44,6 +44,8 @@ module spi_slave_module
 	
 	wire rising_sclk_edge;
 	wire falling_sclk_edge;
+	wire rising_SS_edge;
+	wire falling_SS_edge;
 	
 	reg [SPI_ADDR_LEN + SPI_WAIT_LEN + SPI_WORD_LEN:0] data_word_recv_reg;
 	reg [4:0] bit_counter;
@@ -56,12 +58,15 @@ module spi_slave_module
 	//Edge detector modules
 	pos_edge_det spi_edge_pos( .sig(SCLK_IN), .clk(master_clock), .pe(rising_sclk_edge));
 	neg_edge_det spi_edge_neg( .sig(SCLK_IN), .clk(master_clock), .ne(falling_sclk_edge));
+	pos_edge_det spi_ss_pos  ( .sig(SS_IN), .clk(master_clock), .pe(rising_SS_edge));
+	neg_edge_det spi_ss_neg	 ( .sig(SS_IN), .clk(master_clock), .ne(falling_SS_edge));
 	
 	wire delay_pol =  (CPHA) ? ( (CPOL) ? (rising_sclk_edge) : (falling_sclk_edge)  ) : ( (CPOL) ? (SCLK_IN) : (!SCLK_IN) );	
 	//sample edge
 	wire get_number_edge = (CPHA) ? ( (CPOL) ? (rising_sclk_edge) : (falling_sclk_edge) ) : ( (CPOL) ? (falling_sclk_edge) : (rising_sclk_edge) );
 	//write edge
 	wire switch_number_edge = (CPHA) ? ( (CPOL) ? (falling_sclk_edge) : (rising_sclk_edge) ) : ( (CPOL) ? (rising_sclk_edge) : (falling_sclk_edge) );
+	/*
 	//SS sample 2 cycles
 	reg[1:0] SS_reg;
 	always @(posedge master_clock or negedge i_rst_n) begin
@@ -73,6 +78,8 @@ module spi_slave_module
 		end
 	end
 	wire SS =  (SS_reg==2'b00)?1'b0:1'b1;
+	*/
+	
 	//assign MISO = (activate_ss) ? data_word_send[bit_counter] : 1'b0;
 	
 	// todo : assign reg_addr = ()
@@ -85,35 +92,34 @@ module spi_slave_module
 			spi_status <= `SPI_STATUS_IDLE;
 			data_word_recv_reg <= 'b0;
 		end
-		else begin		
+		else begin
+			if(rising_SS_edge) begin//SS is pulled high, reset the state
+				bit_counter <= (INVERT_DATA_ORDER) ? (0) : (SPI_ADDR_LEN + SPI_WORD_LEN + SPI_WAIT_LEN);
+				spi_status <= `SPI_STATUS_IDLE;
+			end		
+			else begin
 			case(spi_status)
 				`SPI_STATUS_IDLE: begin
-					if(~SS && ~delay_pol) begin
+					if(falling_SS_edge) begin //falling edge, start the process
 						status_ignore_first_edge <= 1'b0;
 						spi_status <= `SPI_STATUS_CYCLE_BITS;	
 					end
 				end
 				`SPI_STATUS_CYCLE_BITS: begin
-					if(~SS) begin
-						//sample edge
-						if(get_number_edge) data_word_recv_reg[bit_counter] <= MOSI;
-						//write edge
-						if(switch_number_edge) begin
-							//make sure when CPHA->1, this module can write at the begining of the process
-							if(CPHA && !status_ignore_first_edge) status_ignore_first_edge <= 1'b1;
-							else begin
-								if(bit_counter ==  ((INVERT_DATA_ORDER) ? (SPI_ADDR_LEN + SPI_WORD_LEN + SPI_WAIT_LEN) : ('sd0)) ) begin 
-									//Word processed, reset
-									bit_counter <= (INVERT_DATA_ORDER) ? (0) : (SPI_ADDR_LEN + SPI_WORD_LEN + SPI_WAIT_LEN);
-									spi_status <= `SPI_STATUS_IDLE;
-								end
-								else bit_counter <= (INVERT_DATA_ORDER) ? (bit_counter + 1) : (bit_counter - 1);	
+					//sample edge
+					if(get_number_edge) data_word_recv_reg[bit_counter] <= MOSI;
+					//write edge
+					if(switch_number_edge) begin
+						//make sure when CPHA->1, this module can write at the begining of the process
+						if(CPHA && !status_ignore_first_edge) status_ignore_first_edge <= 1'b1;
+						else begin
+							if(bit_counter ==  ((INVERT_DATA_ORDER) ? (SPI_ADDR_LEN + SPI_WORD_LEN + SPI_WAIT_LEN) : ('sd0)) ) begin 
+								//Word normally processed, reset
+								bit_counter <= (INVERT_DATA_ORDER) ? (0) : (SPI_ADDR_LEN + SPI_WORD_LEN + SPI_WAIT_LEN);
+								spi_status <= `SPI_STATUS_IDLE;
 							end
+							else bit_counter <= (INVERT_DATA_ORDER) ? (bit_counter + 1) : (bit_counter - 1);	
 						end
-					end
-					else begin//transfer error
-						bit_counter <= (INVERT_DATA_ORDER) ? (0) : (SPI_ADDR_LEN + SPI_WORD_LEN + SPI_WAIT_LEN);
-						spi_status <= `SPI_STATUS_IDLE;
 					end
 				end
 				default:begin
@@ -122,6 +128,7 @@ module spi_slave_module
 					data_word_recv_reg <= 'b0;
 				end
 			endcase
+			end
 		end
 	end
 
@@ -146,7 +153,7 @@ module spi_slave_module
 																SPI_WORD_LEN + SPI_WAIT_LEN];
 				end
 				`CYCLE_STATUS_WAIT: begin
-					MISO 		<= 'b0;
+					MISO 		<= (bit_counter==SPI_WORD_LEN && spi_rw)?data_word_send[SPI_WORD_LEN-1]:'b0;
 				end
 				`CYCLE_STATUS_READ: begin 	//send out reg info
 					MISO 		<= (bit_counter>0)?data_word_send[bit_counter-1'b1]:1'b0;
@@ -175,53 +182,56 @@ module spi_slave_module
 			spi_read	<= 1'b0;
 		end
 		else begin
-			case (cyc_status)
-			`CYCLE_STATUS_IDLE: begin	//rw bit
+			if (rising_SS_edge) begin //transfer error, SS is pulled high in advance. reset
+				cyc_status <= `CYCLE_STATUS_IDLE;
 				reg_operate <= 1'b0;
 				spi_write  	<= 1'b0;
 				spi_read	<= 1'b0;
-				if(bit_counter == ((INVERT_DATA_ORDER) ? ('sd0) : (SPI_ADDR_LEN + SPI_WORD_LEN + SPI_WAIT_LEN))) begin
-					if(switch_number_edge) begin
-						cyc_status <= `CYCLE_STATUS_ADDR;
-					end
-				end
 			end
-
-			`CYCLE_STATUS_ADDR:begin	
-				if(bit_counter == ((INVERT_DATA_ORDER) ? (SPI_ADDR_LEN) : (SPI_WORD_LEN + SPI_WAIT_LEN))) begin
-					if(switch_number_edge) begin
-						cyc_status <= `CYCLE_STATUS_WAIT;
-						if(spi_rw) begin//read mode, inform reg to read value
-							reg_operate <= 1'b1;
-							spi_read 	<= 1'b1;
+			else begin
+				case (cyc_status)
+				`CYCLE_STATUS_IDLE: begin	//rw bit
+					reg_operate <= 1'b0;
+					spi_write  	<= 1'b0;
+					spi_read	<= 1'b0;
+					if(bit_counter == ((INVERT_DATA_ORDER) ? ('sd0) : (SPI_ADDR_LEN + SPI_WORD_LEN + SPI_WAIT_LEN))) begin
+						if(switch_number_edge) begin
+							cyc_status <= `CYCLE_STATUS_ADDR;
 						end
 					end
 				end
-			end
 
-			`CYCLE_STATUS_WAIT:begin
-				reg_operate <= 1'b0;
-				spi_read 	<= 1'b0;
-				if(bit_counter == ((INVERT_DATA_ORDER) ? (SPI_ADDR_LEN + SPI_WAIT_LEN) : (SPI_WORD_LEN))) begin
-					if(switch_number_edge) begin
-						cyc_status <= (spi_rw)?`CYCLE_STATUS_READ:`CYCLE_STATUS_WRITE;
+				`CYCLE_STATUS_ADDR:begin	
+					if(bit_counter == ((INVERT_DATA_ORDER) ? (SPI_ADDR_LEN) : (SPI_WORD_LEN + SPI_WAIT_LEN))) begin
+						if(switch_number_edge) begin
+							cyc_status <= `CYCLE_STATUS_WAIT;
+							if(spi_rw) begin//read mode, inform reg to read value
+								reg_operate <= 1'b1;
+								spi_read 	<= 1'b1;
+							end
+						end
 					end
 				end
-			end
 
-			`CYCLE_STATUS_READ:begin
-				if(~SS) begin
-				reg_operate <= 1'b0;
+				`CYCLE_STATUS_WAIT:begin
+					reg_operate <= 1'b0;
+					spi_read 	<= 1'b0;
+					if(bit_counter == ((INVERT_DATA_ORDER) ? (SPI_ADDR_LEN + SPI_WAIT_LEN) : (SPI_WORD_LEN))) begin
+						if(switch_number_edge) begin
+							cyc_status <= (spi_rw)?`CYCLE_STATUS_READ:`CYCLE_STATUS_WRITE;
+						end
+					end
+				end
+
+				`CYCLE_STATUS_READ:begin
+					reg_operate <= 1'b0;
 					if(bit_counter == ((INVERT_DATA_ORDER) ? (SPI_ADDR_LEN + SPI_WAIT_LEN + SPI_WORD_LEN) : (0)))
 						if(switch_number_edge) begin
 							cyc_status <= `CYCLE_STATUS_IDLE;
 						end
 				end
-				else cyc_status <= `CYCLE_STATUS_IDLE;
-			end
 
-			`CYCLE_STATUS_WRITE:begin
-				if(~SS) begin
+				`CYCLE_STATUS_WRITE:begin
 					if(bit_counter == ((INVERT_DATA_ORDER) ? (SPI_ADDR_LEN + SPI_WAIT_LEN + SPI_WORD_LEN) : (0))) begin
 						if(switch_number_edge) begin
 							cyc_status <= `CYCLE_STATUS_IDLE;
@@ -230,10 +240,8 @@ module spi_slave_module
 						end
 					end
 				end
-				else cyc_status <= `CYCLE_STATUS_IDLE;
+				endcase
 			end
-
-			endcase
 		end
 	end
 endmodule

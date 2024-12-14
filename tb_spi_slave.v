@@ -49,16 +49,23 @@ module tb_spi_slave(
 	reg reset_spi2;
 
 	wire proc_word;
+	wire proc_word_o;
+	wire proc_word_e;
 	reg [3:0] process_next_word;//inform master to send message
-	
-	wire [`SPI_WORD_LEN + `SPI_WAIT_LEN + `SPI_ADDR_LEN:0] recv_tmp_master;
+
+	reg master_sel=0;
 	
     wire spi_rw;
     wire[`SPI_ADDR_LEN-1:0] spi_addr;
     wire[`SPI_WORD_LEN-1:0] spi_data;
 
     reg [`SPI_ADDR_LEN+`SPI_WAIT_LEN+`SPI_WORD_LEN:0] master_send_command;
-    
+
+    wire SIGNAL_CLOCK_o;
+	wire SIGNAL_SS_o;
+	wire SIGNAL_DATA_S_MASTER_o;
+	wire [`SPI_WORD_LEN + `SPI_WAIT_LEN + `SPI_ADDR_LEN:0]recv_tmp_master_o;
+
 	//Clock divider module
 	spi_module 
 	#( 
@@ -68,17 +75,43 @@ module tb_spi_slave(
     )
 	spi_master
 	( .master_clock(chip_clock),
-	.SCLK_OUT(SIGNAL_CLOCK),
-  	.SS_OUT(SIGNAL_SS),
+	.SCLK_OUT(SIGNAL_CLOCK_o),
+  	.SS_OUT(SIGNAL_SS_o),
   	.SS_IN(),
-	.OUTPUT_SIGNAL(SIGNAL_DATA_S_MASTER),
-	.processing_word(proc_word), 
+	.OUTPUT_SIGNAL(SIGNAL_DATA_S_MASTER_o),
+	.processing_word(proc_word_o), 
 	.process_next_word(process_next_word[3]),
 	.data_word_send(master_send_command), 
 	.INPUT_SIGNAL(SIGNAL_DATA_S_SLAVE),
-	.data_word_recv(recv_tmp_master),
+	.data_word_recv(recv_tmp_master_o),
 	.i_rst_n(reset_spi),
 	.is_ready(spi_ready) 
+	);
+	
+	wire SIGNAL_CLOCK_e;
+	wire SIGNAL_SS_e;
+	wire SIGNAL_DATA_S_MASTER_e;
+	wire [`SPI_WORD_LEN + `SPI_WAIT_LEN + `SPI_ADDR_LEN - 1:0]recv_tmp_master_e;
+	wire spi_ready_e;
+	spi_module 
+	#( 
+        .SPI_MASTER (1'b1),
+        .SPI_WORD_LEN(`SPI_ADDR_LEN+`SPI_WAIT_LEN+`SPI_WORD_LEN),
+		.SCLK_DIV('d8)
+    )
+	spi_master_error
+	( .master_clock(chip_clock),
+	.SCLK_OUT(SIGNAL_CLOCK_e),
+  	.SS_OUT(SIGNAL_SS_e),
+  	.SS_IN(),
+	.OUTPUT_SIGNAL(SIGNAL_DATA_S_MASTER_e),
+	.processing_word(proc_word_e), 
+	.process_next_word(process_next_word[3]),
+	.data_word_send(master_send_command[`SPI_ADDR_LEN+`SPI_WAIT_LEN+`SPI_WORD_LEN:1]), 
+	.INPUT_SIGNAL(SIGNAL_DATA_S_SLAVE),
+	.data_word_recv(recv_tmp_master_e),
+	.i_rst_n(reset_spi),
+	.is_ready(spi_ready_e) 
 	);
 	
 	top_spi_slave
@@ -98,6 +131,14 @@ module tb_spi_slave(
     .spi_addr(spi_addr),
     .spi_data(spi_data)
     );
+
+
+	
+	wire [`SPI_WORD_LEN + `SPI_WAIT_LEN + `SPI_ADDR_LEN:0] recv_tmp_master = (master_sel==0)?recv_tmp_master_o:recv_tmp_master_e;
+	assign SIGNAL_CLOCK 			= (master_sel==0) ? SIGNAL_CLOCK_o			: SIGNAL_CLOCK_e;
+	assign SIGNAL_SS    			= (master_sel==0) ? SIGNAL_SS_o				: SIGNAL_SS_e;
+	assign SIGNAL_DATA_S_MASTER 	= (master_sel==0) ? SIGNAL_DATA_S_MASTER_o 	: SIGNAL_DATA_S_MASTER_e;
+	assign proc_word 				= (master_sel==0) ? proc_word_o				: proc_word_e;
 
 	initial begin
 		//$dumpfile("test_data/output.vcd");
@@ -122,24 +163,30 @@ module tb_spi_slave(
 			reset_spi2<= 1'b1;
 			if(!proc_word) begin
 				if(!(process_next_word[3])) begin
-					if(master_send_cnt <= 1) begin
+					if(master_send_cnt%4 <= 1) begin
 						master_send_command <= {1'b0, master_spi_addr, 2'b00, master_spi_word};//write ABCD to reg FF
 					end 
-					else if(master_send_cnt <= 3) begin
-						master_send_command <= {1'b1, master_spi_addr, 2'b00, master_spi_word};//read info from reg FF
-					end
 					else begin
 						master_send_command <= {1'b1, master_spi_addr, 2'b00, master_spi_word};//read info from reg FF
-					end
+					end					
 				end
 				process_next_word <= process_next_word + 1'b1;
 			end
 			else if (proc_word && process_next_word[3])  begin
-				process_next_word <= 4'b0;
-				master_send_cnt <= master_send_cnt + 1;
-				master_spi_addr <= master_spi_addr - 1'b1;
-				master_spi_word <= master_spi_word + 1'b1;
-				reg_data_ret <= reg_data_ret+1'b1;
+				process_next_word 	<= 4'b0;
+				master_send_cnt 	<= master_send_cnt + 1;
+				master_spi_addr 	<= master_spi_addr - 1'b1;
+				master_spi_word 	<= master_spi_word + 1'b1;
+				reg_data_ret 		<= reg_data_ret+1'b1;
+			end
+			
+			if(SIGNAL_SS) begin
+				if(master_send_cnt == 10)
+					master_sel = 1;
+				else if(master_send_cnt == 5)
+					master_sel = 1;
+				else if(SIGNAL_SS_o) 
+					master_sel = 0;
 			end
 		end
 		chip_clock <= ~chip_clock;
