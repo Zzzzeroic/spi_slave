@@ -51,7 +51,7 @@ module tb_spi_slave(
 	wire proc_word;
 	wire proc_word_o;
 	wire proc_word_e;
-	reg [3:0] process_next_word;//inform master to send message
+	reg [7:0] process_next_word;//inform master to send message
 
 	reg master_sel=0;
 	
@@ -71,7 +71,7 @@ module tb_spi_slave(
 	#( 
         .SPI_MASTER (1'b1),
         .SPI_WORD_LEN(`SPI_ADDR_LEN+`SPI_WAIT_LEN+`SPI_WORD_LEN+1'b1),
-		.SCLK_DIV('d8)
+		.SCLK_DIV('d4)
     )
 	spi_master
 	( .master_clock(chip_clock),
@@ -80,7 +80,7 @@ module tb_spi_slave(
   	.SS_IN(),
 	.OUTPUT_SIGNAL(SIGNAL_DATA_S_MASTER_o),
 	.processing_word(proc_word_o), 
-	.process_next_word(process_next_word[3]),
+	.process_next_word(process_next_word[7]),
 	.data_word_send(master_send_command), 
 	.INPUT_SIGNAL(SIGNAL_DATA_S_SLAVE),
 	.data_word_recv(recv_tmp_master_o),
@@ -97,7 +97,7 @@ module tb_spi_slave(
 	#( 
         .SPI_MASTER (1'b1),
         .SPI_WORD_LEN(`SPI_ADDR_LEN+`SPI_WAIT_LEN+`SPI_WORD_LEN),
-		.SCLK_DIV('d8)
+		.SCLK_DIV('d4)
     )
 	spi_master_error
 	( .master_clock(chip_clock),
@@ -106,7 +106,7 @@ module tb_spi_slave(
   	.SS_IN(),
 	.OUTPUT_SIGNAL(SIGNAL_DATA_S_MASTER_e),
 	.processing_word(proc_word_e), 
-	.process_next_word(process_next_word[3]),
+	.process_next_word(process_next_word[7]),
 	.data_word_send(master_send_command[`SPI_ADDR_LEN+`SPI_WAIT_LEN+`SPI_WORD_LEN:1]), 
 	.INPUT_SIGNAL(SIGNAL_DATA_S_SLAVE),
 	.data_word_recv(recv_tmp_master_e),
@@ -144,7 +144,7 @@ module tb_spi_slave(
 		//$dumpfile("test_data/output.vcd");
 		//$dumpvars();	
 		test_cycles <= 0;	
-		process_next_word <= 4'b0;
+		process_next_word <= 8'b0;
 		reset_spi <= 1'b0;
 		reset_spi2<= 1'b0;
 		reg_data_ret <= `TEST_WORD;
@@ -162,7 +162,7 @@ module tb_spi_slave(
 			reset_spi <= 1'b1;
 			reset_spi2<= 1'b1;
 			if(!proc_word) begin
-				if(!(process_next_word[3])) begin
+				if(!(process_next_word[7])) begin
 					if(master_send_cnt%4 <= 1) begin
 						master_send_command <= {1'b0, master_spi_addr, 2'b00, master_spi_word};//write ABCD to reg FF
 					end 
@@ -172,8 +172,8 @@ module tb_spi_slave(
 				end
 				process_next_word <= process_next_word + 1'b1;
 			end
-			else if (proc_word && process_next_word[3])  begin
-				process_next_word 	<= 4'b0;
+			else if (proc_word && process_next_word[7])  begin
+				process_next_word 	<= 8'b0;
 				master_send_cnt 	<= master_send_cnt + 1;
 				master_spi_addr 	<= master_spi_addr - 1'b1;
 				master_spi_word 	<= master_spi_word + 1'b1;
